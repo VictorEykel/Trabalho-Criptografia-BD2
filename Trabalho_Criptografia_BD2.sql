@@ -22,7 +22,15 @@ begin
    -- Criptografa a senha usando a função fn_cripto
    :new.senha := fn_cripto(:new.cod_login, :new.senha);
 
-   -- Insere o registro de acesso com a data e hora atual
+end;
+/
+
+create or replace trigger tg_login_after
+after insert on login
+referencing new as new
+for each row
+begin
+
    insert into acesso(data_hora, cod_login)
    values(systimestamp, :new.cod_login);
 
@@ -335,6 +343,7 @@ end;
 /
 
 EXEC pr_acesso('pedro', 'COTEMIG123');
+
 
 insert into login (login, senha) values ('pedro', 'COTEMIG123');
 
