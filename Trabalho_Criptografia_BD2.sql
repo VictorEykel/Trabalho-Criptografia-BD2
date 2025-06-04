@@ -29,7 +29,6 @@ begin
 end;
 /
 
-
 create or REPLACE trigger tg_acesso
 before insert on acesso
 referencing new as new
@@ -45,27 +44,17 @@ begin
 
    if val_login is not null and val_senha is not null then
       -- Acesso permitido, nada a fazer
-      NULL;
+      insert into acesso(data_hora, cod_login)
+      values(systimestamp, :new.cod_login);
+
+      update login set senha = fn_cripto(val_login, val_senha)
+      where cod_login = val_login;
    else
       -- Acesso negado, lança erro
       raise_application_error(-20001, 'Login ou senha inválidos.');
    end if;
 end;
 /
-
-
-
-/*create or replace trigger tg_valida_login
-before insert on acesso
-referencing new as new
-for each row
-declare
-   
-begin
-   
-end;
-/
-*/
 
 create or replace function fn_cripto (cod_login number, senha varchar2)
 return varchar2 
