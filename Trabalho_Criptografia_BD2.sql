@@ -25,6 +25,7 @@ begin
 end;
 /
 
+
 create or replace trigger tg_login_after
 after insert on login
 referencing new as new
