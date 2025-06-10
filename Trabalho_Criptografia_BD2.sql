@@ -11,6 +11,9 @@ create table acesso (
 
 create sequence sq_login;
 
+select * from login;
+select * from acesso;
+
 create or replace trigger tg_login
 before insert on login
 referencing new as new
@@ -30,38 +33,14 @@ after insert on login
 referencing new as new
 for each row
 begin
+
    insert into acesso(data_hora, cod_login)
    values(systimestamp, :new.cod_login);
 
 end;
 /
 
-create or REPLACE trigger tg_acesso
-after insert on acesso
-referencing new as new
-for each row
-declare
-   pragma autonomous_transaction; -- Permite que o trigger funcione de forma independente
-   cursor cr_login is
-      select login, senha from login 
-      join acesso on login.cod_login = acesso.cod_login
-      where login.cod_login = :new.cod_login;
-begin
-   for x in cr_login loop
-      if x.login is not null and x.senha is not null then
-      -- Acesso permitido, nada a fazer
-         insert into acesso(data_hora, cod_login)
-         values(systimestamp, :new.cod_login);
-
-         update login set senha = fn_cripto(val_login, val_senha)
-         where cod_login = val_login;
-      else
-      -- Acesso negado, lança erro
-      raise_application_error(-20001, 'Login ou senha inválidos.');
-   end if;
-   end loop;
-end;
-/
+-- TRIGGER tg_acesso REMOVIDO (tinha lógica problemática)
 
 create or replace function fn_cripto (cod_login number, senha varchar2)
 return varchar2 
@@ -87,17 +66,9 @@ type array_linhas is table of varchar2(1) index by pls_integer;
    incremento  number := 0;
    valor_ascii number := 0;
    novo_valor  number := 0;
-   tamanho_senha number;
 begin
-
-   tamanho_senha := length(senha);
-   
-   if tamanho_senha = 0 then
-      raise_application_error(-20001, 'Senha não pode ser vazia.');
-   end if;
-
    -- Etapa 1: Preenche as 3 linhas da matriz
-    for i in 1..tamanho_senha loop
+   for i in 1..length(senha) loop
       case linha_atual
          when 1 then
             linha1(coluna1) := substr(senha, i, 1);
@@ -117,29 +88,29 @@ begin
       end if;
    end loop;
 
+   if linha1.count > 0 then 
    -- Percorre a primeira linha da matriz e concatena o seu conteúdo ao resultado
-   if linha1.count > 0 then
       for x in linha1.first..linha1.last loop
-         if linha1.exists(x) then 
-            resultado1 := resultado1 || linha1(x); 
+         if linha1.exists(x) 
+         then resultado1 := resultado1 || linha1(x); 
          end if;
       end loop;
    end if;
 
+   if linha2.count > 0 then 
    -- Percorre a segunda linha da matriz e concatena o seu conteúdo ao resultado
-   if linha2.count > 0 then
       for y in linha2.first..linha2.last loop
-         if linha2.exists(y) then 
-            resultado1 := resultado1 || linha2(y); 
+         if linha2.exists(y) 
+         then resultado1 := resultado1 || linha2(y); 
          end if;
       end loop;
    end if;
 
+   if linha3.count > 0 then 
    -- Percorre a terceira linha da matriz e concatena o seu conteúdo ao resultado
-   if linha3.count > 0 then
       for z in linha3.first..linha3.last loop
-         if linha3.exists(z) then 
-            resultado1 := resultado1 || linha3(z);
+         if linha3.exists(z) 
+         then resultado1 := resultado1 || linha3(z);
          end if;
       end loop;
    end if;
@@ -162,25 +133,30 @@ begin
      where cod_login = fn_cripto.cod_login;
    
    -- Aplica o incremento em cada bloco de 3 dígitos 
-   for i in 0..(trunc(length(resultado2) / 3) - 1) loop
+   for i in 0..(length(resultado2) / 3 - 1) loop
       valor_ascii := to_number(substr(resultado2, i * 3 + 1, 3));
       novo_valor := valor_ascii + incremento;
       resultado3 := resultado3 || lpad(novo_valor, 3, '0');
    end loop;
+   
+   dbms_output.put_line('Valor do incremento: ' || incremento);
 
    return resultado3;
 end;
 /
 
+-- PROCEDURE MODIFICADA COM DECRIPTOGRAFIA INTEGRADA
 create or replace procedure pr_acesso (par_login varchar2, par_senha varchar2)
 as
-   codLogin        number;
-   senha_cripto    varchar2(4000) := '';
-   senha_decripto  varchar2(1000) := '';
-   valincremento   number := 0;
-   resultado3      varchar2(4000) := '';
-   resultado2      varchar2(1000) := '';
-   resultado1      varchar2(1000) := '';
+   codLogin       number := 0;
+   senha_cripto   varchar2(4000) := '';
+   senha_decripto varchar2(1000) := '';
+   valincremento  number := 0;
+   
+   -- Variáveis para decriptografia
+   resultado3     varchar2(4000) := '';
+   resultado2     varchar2(1000) := '';
+   resultado1     varchar2(1000) := '';
    
    -- Variáveis para reorganização da matriz 
    type array_linhas is table of varchar2(1) index by pls_integer;
@@ -198,7 +174,7 @@ begin
    from login where login = par_login;
 
    if codLogin = 0 then
-      raise_application_error(-20001, 'Login ou senha inválidos.');
+      raise_application_error(-20003, 'Login ou senha inválidos.');
    end if;
 
    -- Busca os dados do usuário
@@ -206,97 +182,112 @@ begin
    from login where login = par_login;
 
    -- Busca o incremento do último acesso
-   select nvl(max(to_number(to_char(data_hora, 'FF1'))), 0) into valincremento
+   select max(to_number(to_char(data_hora, 'FF1'))) into valincremento
    from acesso where cod_login = codLogin;
 
-   -- PROCESSO DE DECRIPTOGRAFIA (3 etapas em ordem reversa)
+   if valincremento is null then
+      select max(to_number(to_char(systimestamp, 'FF1'))) into valincremento
+      from dual;
+   end if;
+
+   -- INÍCIO DA DECRIPTOGRAFIA
    
    -- Etapa 3 Reversa: Remove o incremento de cada bloco de 3 dígitos
-   resultado3 := '';
-   for i in 0..(trunc(length(senha_cripto) / 3) - 1) loop
+   for i in 0..(length(senha_cripto) / 3 - 1) loop
       valor_ascii := to_number(substr(senha_cripto, i * 3 + 1, 3));
       novo_valor := valor_ascii - valincremento;
       resultado3 := resultado3 || lpad(novo_valor, 3, '0');
    end loop;
 
-   -- Etapa 2 Reversa: Converte blocos de 3 dígitos ASCII de volta para caracteres
-   resultado2 := '';
-   for i in 0..(trunc(length(resultado3) / 3) - 1) loop
+   -- Etapa 2 Reversa: Converte blocos de 3 dígitos ASCII de volta para caractere
+   for i in 0..(length(resultado3) / 3 - 1) loop
       valor_ascii := to_number(substr(resultado3, i * 3 + 1, 3));
       resultado2 := resultado2 || chr(valor_ascii);
    end loop;
 
-   -- Etapa 1 Reversa: Reorganiza a matriz 3xN de volta para a senha original
-   resultado1 := '';
-   tamanho_total := length(resultado2);
+   -- *** PARTE DE ORDENAMENTO DOS CARACTERES - DECRIPTOGRAFIA ***
+   -- Etapa 1 Reversa: Reorganiza a matriz (PROCESSO INVERSO DA CRIPTOGRAFIA)
    
-   -- Calcula quantos caracteres por linha da matriz
+   -- A criptografia distribui os caracteres em 3 linhas de forma cíclica (1->2->3->1->2->3...)
+   -- e depois concatena linha1 + linha2 + linha3
+   -- Para reverter, precisamos separar o resultado2 de volta nas 3 linhas
+   
+   tamanho_total := length(resultado2);
    chars_por_linha := ceil(tamanho_total / 3);
    
-   -- Limpa as arrays
-   linha1.delete;
-   linha2.delete;
-   linha3.delete;
-   
-   -- Preenche as linhas da matriz com base na concatenação feita na criptografia
-   -- Linha 1: primeiros chars_por_linha caracteres
-   for i in 1..chars_por_linha loop
-      if i <= length(resultado2) then
-         linha1(i) := substr(resultado2, i, 1);
-      end if;
-   end loop;
-
-   -- Linha 2: próximos chars_por_linha caracteres
-   for i in 1..chars_por_linha loop
-      if (chars_por_linha + i) <= length(resultado2) then
-         linha2(i) := substr(resultado2, chars_por_linha + i, 1);
-      end if;
-   end loop;
-
-   -- Linha 3: últimos chars_por_linha caracteres
-   for i in 1..chars_por_linha loop
-      if (2 * chars_por_linha + i) <= length(resultado2) then
-         linha3(i) := substr(resultado2, 2 * chars_por_linha + i, 1);
-      end if;
-   end loop;
-
-   -- Reconstrói a senha original alternando entre as linhas (processo reverso do embaralhamento)
-   for i in 1..chars_por_linha loop
-      -- Linha 1
-      if linha1.exists(i) and linha1(i) is not null then
-         resultado1 := resultado1 || linha1(i);
-      end if;
+   -- Calcula quantos caracteres cada linha realmente tem
+   declare
+      chars_linha1 number;
+      chars_linha2 number;  
+      chars_linha3 number;
+      pos_atual number := 1;
+   begin
+      -- Distribui os caracteres da mesma forma que na criptografia
+      chars_linha1 := ceil(tamanho_total / 3);
+      chars_linha2 := case when tamanho_total > chars_linha1 then ceil((tamanho_total - chars_linha1) / 2) else 0 end;
+      chars_linha3 := tamanho_total - chars_linha1 - chars_linha2;
       
-      -- Linha 2  
-      if linha2.exists(i) and linha2(i) is not null then
-         resultado1 := resultado1 || linha2(i);
-      end if;
+      -- Reconstói as linhas a partir do resultado2 (que é linha1+linha2+linha3 concatenados)
+      -- Primeira linha
+      for i in 1..chars_linha1 loop
+         linha1(i) := substr(resultado2, pos_atual, 1);
+         pos_atual := pos_atual + 1;
+      end loop;
       
-      -- Linha 3
-      if linha3.exists(i) and linha3(i) is not null then
-         resultado1 := resultado1 || linha3(i);
-      end if;
-   end loop;
+      -- Segunda linha  
+      for i in 1..chars_linha2 loop
+         linha2(i) := substr(resultado2, pos_atual, 1);
+         pos_atual := pos_atual + 1;
+      end loop;
+      
+      -- Terceira linha
+      for i in 1..chars_linha3 loop
+         linha3(i) := substr(resultado2, pos_atual, 1);
+         pos_atual := pos_atual + 1;
+      end loop;
+   end;
+
+   -- Reconstrói a senha original intercalando as linhas (PROCESSO INVERSO)
+   -- Na criptografia: caracteres vão para linha1, linha2, linha3, linha1, linha2, linha3...
+   -- Na decriptografia: pegamos linha1[1], linha2[1], linha3[1], linha1[2], linha2[2], linha3[2]...
+   declare
+      max_chars number := greatest(nvl(linha1.count, 0), nvl(linha2.count, 0), nvl(linha3.count, 0));
+   begin
+      for i in 1..max_chars loop
+         -- Linha 1
+         if linha1.exists(i) and linha1(i) is not null then
+            resultado1 := resultado1 || linha1(i);
+         end if;
+         
+         -- Linha 2
+         if linha2.exists(i) and linha2(i) is not null then
+            resultado1 := resultado1 || linha2(i);
+         end if;
+         
+         -- Linha 3
+         if linha3.exists(i) and linha3(i) is not null then
+            resultado1 := resultado1 || linha3(i);
+         end if;
+      end loop;
+   end;
 
    senha_decripto := resultado1;
    
-   -- Compara a senha decriptografada com a senha fornecida pelo usuário
+   -- FIM DA DECRIPTOGRAFIA
+   
+   -- Verifica se a senha decriptografada é igual à senha fornecida 
    if senha_decripto = par_senha then
       -- Registra o novo acesso
-      insert into acesso (data_hora, cod_login) values (systimestamp, codLogin);
+      insert into acesso values (systimestamp, codLogin);
       
-      -- Atualiza com uma nova senha criptografada baseada no SYSTIMESTAMP atual
+      -- Atualiza a senha com nova criptografia
       update login set senha = fn_cripto(codLogin, par_senha)
       where cod_login = codLogin;
-      
-      commit;
-      
+
       dbms_output.put_line('Acesso autorizado para o usuário: ' || par_login || '. Senha atualizada com sucesso.');
+      dbms_output.put_line('Valor do incremento: ' || valincremento  );
    else
-      -- Para debug, mostra as senhas comparadas
-      dbms_output.put_line('Senha decriptografada: ' || senha_decripto);
-      dbms_output.put_line('Senha fornecida: ' || par_senha);
-      raise_application_error(-20001, 'Login ou senha inválidos.');
+      raise_application_error(-20001, 'Login ou senha inválidos. ' || par_senha || ' != ' || senha_decripto);
    end if;
 
 exception
@@ -306,14 +297,24 @@ exception
 end;
 /
 
-EXEC pr_acesso('pedro2', 'COTEMIG123');
+-- 074076078058086084056091080057
+-- 075077079059087085057092081058
 
-insert into login (login, senha) values ('pedro7', 'C');
+-- 067069071051079077049084073050
+-- 072074076056084082054089078055
 
-drop trigger tg_acesso;
+-- Teste da procedure
+EXEC pr_acesso('pedro', 'COTEMIG123');
 
+-- Inserção de dados de teste
+insert into login (login, senha) values ('pedro', 'COTEMIG123');
+
+-- Consultas para verificação
 select * from acesso;
-delete from acesso;
-
 select * from login;
+delete from acesso;
 delete from login;
+
+-- Comandos de limpeza (comentados para segurança)
+-- delete from acesso;
+-- delete from login;
